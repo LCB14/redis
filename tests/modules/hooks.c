@@ -189,14 +189,18 @@ void persistenceCallback(RedisModuleCtx *ctx, RedisModuleEvent e, uint64_t sub, 
     switch (sub) {
         case REDISMODULE_SUBEVENT_PERSISTENCE_RDB_START: keyname = "persistence-rdb-start"; break;
         case REDISMODULE_SUBEVENT_PERSISTENCE_AOF_START: keyname = "persistence-aof-start"; break;
+        case REDISMODULE_SUBEVENT_PERSISTENCE_SYNC_AOF_START: keyname = "persistence-syncaof-start"; break;
         case REDISMODULE_SUBEVENT_PERSISTENCE_SYNC_RDB_START: keyname = "persistence-syncrdb-start"; break;
         case REDISMODULE_SUBEVENT_PERSISTENCE_ENDED: keyname = "persistence-end"; break;
         case REDISMODULE_SUBEVENT_PERSISTENCE_FAILED: keyname = "persistence-failed"; break;
     }
     /* modifying the keyspace from the fork child is not an option, using log instead */
     RedisModule_Log(ctx, "warning", "module-event-%s", keyname);
-    if (sub == REDISMODULE_SUBEVENT_PERSISTENCE_SYNC_RDB_START)
+    if (sub == REDISMODULE_SUBEVENT_PERSISTENCE_SYNC_RDB_START ||
+        sub == REDISMODULE_SUBEVENT_PERSISTENCE_SYNC_AOF_START) 
+    {
         LogNumericEvent(ctx, keyname, 0);
+    }
 }
 
 void loadingCallback(RedisModuleCtx *ctx, RedisModuleEvent e, uint64_t sub, void *data)
@@ -253,14 +257,46 @@ void moduleChangeCallback(RedisModuleCtx *ctx, RedisModuleEvent e, uint64_t sub,
     LogStringEvent(ctx, keyname, ei->module_name);
 }
 
+void swapDbCallback(RedisModuleCtx *ctx, RedisModuleEvent e, uint64_t sub, void *data)
+{
+    REDISMODULE_NOT_USED(e);
+    REDISMODULE_NOT_USED(sub);
+
+    RedisModuleSwapDbInfo *ei = data;
+    LogNumericEvent(ctx, "swapdb-first", ei->dbnum_first);
+    LogNumericEvent(ctx, "swapdb-second", ei->dbnum_second);
+}
+
+void configChangeCallback(RedisModuleCtx *ctx, RedisModuleEvent e, uint64_t sub, void *data)
+{
+    REDISMODULE_NOT_USED(e);
+    if (sub != REDISMODULE_SUBEVENT_CONFIG_CHANGE) {
+        return;
+    }
+
+    RedisModuleConfigChangeV1 *ei = data;
+    LogNumericEvent(ctx, "config-change-count", ei->num_changes);
+    LogStringEvent(ctx, "config-change-first", ei->config_names[0]);
+}
+
 /* This function must be present on each Redis module. It is used in order to
  * register the commands into the Redis server. */
 int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+#define VerifySubEventSupported(e, s) \
+    if (!RedisModule_IsSubEventSupported(e, s)) { \
+        return REDISMODULE_ERR; \
+    }
+
     REDISMODULE_NOT_USED(argv);
     REDISMODULE_NOT_USED(argc);
 
     if (RedisModule_Init(ctx,"testhook",1,REDISMODULE_APIVER_1)
         == REDISMODULE_ERR) return REDISMODULE_ERR;
+
+    /* Example on how to check if a server sub event is supported */
+    if (!RedisModule_IsSubEventSupported(RedisModuleEvent_ReplicationRoleChanged, REDISMODULE_EVENT_REPLROLECHANGED_NOW_MASTER)) {
+        return REDISMODULE_ERR;
+    }
 
     /* replication related hooks */
     RedisModule_SubscribeToServerEvent(ctx,
@@ -287,8 +323,14 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
         RedisModuleEvent_Shutdown, shutdownCallback);
     RedisModule_SubscribeToServerEvent(ctx,
         RedisModuleEvent_CronLoop, cronLoopCallback);
+
     RedisModule_SubscribeToServerEvent(ctx,
         RedisModuleEvent_ModuleChange, moduleChangeCallback);
+    RedisModule_SubscribeToServerEvent(ctx,
+        RedisModuleEvent_SwapDB, swapDbCallback);
+
+    RedisModule_SubscribeToServerEvent(ctx,
+        RedisModuleEvent_Config, configChangeCallback);
 
     event_log = RedisModule_CreateDict(ctx);
 

@@ -16,6 +16,11 @@ start_server {tags {"modules"}} {
         r hmset hh f1 v1 f2 v2
         lsort [r scan.scan_key hh]
     } {{f1 v1} {f2 v2}}
+    
+    test {Module scan hash dict with int value} {
+        r hmset hh1 f1 1 
+        lsort [r scan.scan_key hh1]
+    } {{f1 1}}
 
     test {Module scan hash dict} {
         r config set hash-max-ziplist-entries 2
@@ -44,4 +49,8 @@ start_server {tags {"modules"}} {
         r sadd ss 3
         lsort [r scan.scan_key ss]
     } {{1 {}} {2 {}} {3 {}}}
+
+    test "Unload the module - scan" {
+        assert_equal {OK} [r module unload scan]
+    }
 }
